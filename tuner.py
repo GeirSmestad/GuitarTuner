@@ -307,11 +307,23 @@ class LedHemicircle:
         # Geometry
         w = max(int(self.canvas.winfo_width()), 1)
         h = max(int(self.canvas.winfo_height()), 1)
-        margin = 18
+        margin_x = 18.0
+        margin_y = 16.0
         cx = w / 2.0
-        cy = h - margin
-        radius = max(30.0, min((w / 2.0) - margin, h - (margin * 2.5)))
-        led_r = _clamp(radius * 0.075, 7.0, 14.0)
+
+        # Choose a radius that fits while keeping roughly symmetric top/bottom whitespace.
+        # We account for LED radius so the LED circles (not just their centers) fit.
+        radius_guess = max(30.0, min((w / 2.0) - margin_x, h - (2.0 * margin_y)))
+        led_r = _clamp(radius_guess * 0.075, 7.0, 14.0)
+
+        radius_w = (w / 2.0) - (margin_x + led_r)
+        radius_h = h - (2.0 * (margin_y + led_r))
+        radius = max(30.0, min(radius_w, radius_h))
+
+        # Place the circle center so the semicircle has symmetric top/bottom margins.
+        # Top LED edge: cy - radius - led_r
+        # Bottom LED edge: cy + led_r
+        cy = (h + radius) / 2.0
 
         # LEDs along the top semicircle (left -> right)
         for i in range(self.led_count):
