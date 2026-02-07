@@ -361,6 +361,15 @@ class GuitarTunerApp:
         self.last_update = 0.0
         self._stopping = False
         self._auto_started = False
+        self._frame_loop_running = False
+
+        # Smoothed display state (for 60 FPS rendering)
+        self._prev_analyzed_cents: float | None = None  # for MA2
+        self._interp_note: str | None = None
+        self._interp_from_cents: float | None = None
+        self._interp_to_cents: float | None = None
+        self._interp_t0: float = 0.0
+        self._display_cents: float | None = None
 
         # UI
         self.note_var = tk.StringVar(value="")
@@ -452,6 +461,14 @@ class GuitarTunerApp:
         with self.q.mutex:
             self.q.queue.clear()
 
+        # Reset smoothing state on each start.
+        self._prev_analyzed_cents = None
+        self._interp_note = None
+        self._interp_from_cents = None
+        self._interp_to_cents = None
+        self._display_cents = None
+        self._interp_t0 = time.perf_counter()
+
         try:
             self.stream = sd.InputStream(
                 channels=1,
@@ -472,6 +489,9 @@ class GuitarTunerApp:
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.root.after(10, self.update_loop)
+        if not self._frame_loop_running:
+            self._frame_loop_running = True
+            self.root.after(0, self.frame_loop)
 
     def stop(self):
         if self.stream is None or self._stopping:
@@ -509,6 +529,28 @@ class GuitarTunerApp:
             self.note_label.config(bg=self.ok_bg)
         self.led_arc.reset()
 
+    def frame_loop(self):
+        """
+        Render at ~60 FPS using interpolation toward the latest analyzed (MA2) cents value.
+        Analysis still runs at the audio callback block rate (block_seconds).
+        """
+        if self.stream is None:
+            self._frame_loop_running = False
+            return
+
+        if self._interp_note is None or self._interp_to_cents is None or self._interp_from_cents is None:
+            # No tone detected yet (or currently silent).
+            self.led_arc.reset()
+        else:
+            now = time.perf_counter()
+            u = (now - self._interp_t0) / max(self.block_seconds, 1e-6)
+            u = _clamp(u, 0.0, 1.0)
+            c = float(self._interp_from_cents) + (float(self._interp_to_cents) - float(self._interp_from_cents)) * float(u)
+            self._display_cents = c
+            self.led_arc.set_value(self._interp_note, c)
+
+        self.root.after(16, self.frame_loop)
+
     def update_loop(self):
         if self.stream is None:
             return
@@ -540,6 +582,13 @@ class GuitarTunerApp:
             if self.note_label is not None:
                 self.note_label.config(bg=self.ok_bg)
             self.led_arc.reset()
+
+            # Reset interpolation state when no pitch is detected.
+            self._prev_analyzed_cents = None
+            self._interp_note = None
+            self._interp_from_cents = None
+            self._interp_to_cents = None
+            self._display_cents = None
             return
 
         self.note_var.set(res.note_name or "—")
@@ -555,8 +604,29 @@ class GuitarTunerApp:
 
         self.string_var.set(f"Nearest string: {res.string_name} ({res.string_freq:.1f} Hz)")
 
-        # LED arc visualization uses cents vs closest equal-tempered note
-        self.led_arc.set_value(res.note_name, res.cents)
+        # LED arc visualization uses cents vs closest equal-tempered note.
+        # Apply a 2-sample moving average (MA2) prefilter.
+        if res.cents is None:
+            self._prev_analyzed_cents = None
+            self._interp_note = None
+            self._interp_from_cents = None
+            self._interp_to_cents = None
+            self._display_cents = None
+        else:
+            current_cents = float(res.cents)
+            if self._prev_analyzed_cents is None:
+                ma2 = current_cents
+            else:
+                ma2 = 0.5 * (current_cents + float(self._prev_analyzed_cents))
+            self._prev_analyzed_cents = current_cents
+
+            # Interpolate from current displayed value to the new MA2 target over block_seconds.
+            if self._display_cents is None:
+                self._display_cents = ma2
+            self._interp_note = res.note_name
+            self._interp_from_cents = float(self._display_cents)
+            self._interp_to_cents = float(ma2)
+            self._interp_t0 = time.perf_counter()
 
         # Simple “traffic light”
         if sc is None:
