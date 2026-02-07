@@ -402,15 +402,6 @@ class GuitarTunerApp:
         # self.level_label = tk.Label(self.root, textvariable=self.level_var, font=small)
         # self.level_label.pack(padx=16, pady=(0, 14))
 
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(pady=(0, 14))
-
-        self.start_btn = tk.Button(btn_frame, text="Start", width=12, command=self.start)
-        self.start_btn.grid(row=0, column=0, padx=6)
-
-        self.stop_btn = tk.Button(btn_frame, text="Stop", width=12, command=self.stop, state="disabled")
-        self.stop_btn.grid(row=0, column=1, padx=6)
-
         self.status = tk.StringVar(value="Stopped")
         # self.status_label = tk.Label(self.root, textvariable=self.status, font=small)
         # self.status_label.pack(padx=16, pady=(0, 12))
@@ -443,14 +434,8 @@ class GuitarTunerApp:
         if self.stream is not None or self._stopping:
             return
 
-        # Update UI immediately so the click always feels responsive.
-        # On macOS, opening the audio device can block briefly (and may prompt for mic permission).
         self.status.set("Starting microphone…")
-        self.start_btn.config(state="disabled")
-        self.stop_btn.config(state="disabled")
-        self.root.update_idletasks()
-
-        # Defer actual stream start to the next Tk tick.
+        # Defer actual stream start to the next Tk tick (can block briefly on macOS).
         self.root.after(1, self._start_stream_impl)
 
     def _start_stream_impl(self):
@@ -481,13 +466,9 @@ class GuitarTunerApp:
         except Exception as e:
             self.status.set(f"Failed to start mic: {e}")
             self.stream = None
-            self.start_btn.config(state="normal")
-            self.stop_btn.config(state="disabled")
             return
 
         self.status.set("Listening… Pluck one string at a time.")
-        self.start_btn.config(state="disabled")
-        self.stop_btn.config(state="normal")
         self.root.after(10, self.update_loop)
         if not self._frame_loop_running:
             self._frame_loop_running = True
@@ -497,15 +478,10 @@ class GuitarTunerApp:
         if self.stream is None or self._stopping:
             return
 
-        # Update UI immediately so the click always feels responsive.
+        # Stop synchronously (no buttons to update; this is also used by window-close).
         self._stopping = True
         self.status.set("Stopping…")
-        self.start_btn.config(state="disabled")
-        self.stop_btn.config(state="disabled")
-        self.root.update_idletasks()
-
-        # Defer actual stop/close to the next Tk tick (can block briefly on macOS).
-        self.root.after(1, self._stop_stream_impl)
+        self._stop_stream_impl()
 
     def _stop_stream_impl(self):
         if self.stream is not None:
@@ -518,8 +494,6 @@ class GuitarTunerApp:
         self._stopping = False
 
         self.status.set("Stopped")
-        self.start_btn.config(state="normal")
-        self.stop_btn.config(state="disabled")
         self.note_var.set("")
         self.freq_var.set("Freq: — Hz")
         self.cents_var.set("Cents: —")
@@ -644,7 +618,9 @@ class GuitarTunerApp:
                     self.note_label.config(bg="#f6b3b3")  # light red
 
     def on_close(self):
-        self.stop()
+        # Ensure the stream is stopped before tearing down Tk.
+        if self.stream is not None:
+            self.stop()
         self.root.destroy()
 
     def run(self):
